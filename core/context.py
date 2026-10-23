@@ -13,6 +13,7 @@ class RunContext:
     run_id: str
     run_dir: str
     bus: EventBus
+    llm: Optional[Any] = None
     client: Optional[Any] = None
     model: str = "qwen-plus"
 

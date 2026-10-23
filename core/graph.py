@@ -21,12 +21,23 @@ class NodeResult:
 
 
 class Graph:
-    def __init__(self, max_steps: int = 12):
+    def __init__(
+        self,
+        max_steps: int = 12,
+        max_iterations: int = 3,
+        iteration_node: Optional[str] = None,
+    ):
+        """max_steps 防止图整体跑飞；max_iterations 限制业务轮次（默认按 fixer 计）。
+
+        iteration_node 指「每进入一次算一轮」的节点。不设则只靠 max_steps 兜底。
+        """
         self._nodes: Dict[str, Any] = {}
         self._edges: Dict[str, Optional[str]] = {}
         self._routers: Dict[str, tuple] = {}
         self._entry: Optional[str] = None
         self.max_steps = max_steps
+        self.max_iterations = max_iterations
+        self.iteration_node = iteration_node
 
     # ---------- 构图 API ----------
 
@@ -86,7 +97,6 @@ class Graph:
 
         current: Optional[str] = self._entry
         steps = 0
-        visits: Dict[str, int] = {}
         reason = "end"
         state.write("graph", "status", "running")
         ctx.bus.emit(
@@ -95,6 +105,7 @@ class Graph:
             task=state.task,
             entry=current,
             max_steps=self.max_steps,
+            max_iterations=self.max_iterations,
         )
 
         while True:
@@ -109,10 +120,16 @@ class Graph:
             node_name = current
             agent = self._nodes[node_name]
 
-            # 回头路走第二次就算一轮迭代，用于展示「循环上限」真的在生效
-            if visits.get(node_name, 0) > 0:
+            # 业务轮次：每进入一次 iteration_node 算一轮，先判上限再计数
+            if self.iteration_node and node_name == self.iteration_node:
+                if state.iteration >= self.max_iterations:
+                    ctx.bus.emit(
+                        "node_skipped", node=node_name, step=steps,
+                        reason="达到最大迭代轮次",
+                    )
+                    reason = "max_iterations"
+                    break
                 state.write("graph", "iteration", state.iteration + 1)
-            visits[node_name] = visits.get(node_name, 0) + 1
 
             ctx.bus.emit("node_start", node=node_name, step=steps)
             try:
@@ -135,7 +152,7 @@ class Graph:
 
             state.record_step(steps, node_name)
             state.save(ctx.state_path)
-            ctx.bus.emit("node_end", node=node_name, step=steps)
+            ctx.bus.emit("node_end", node=node_name, step=steps, state=state.snapshot())
 
             nxt = self._next_node(node_name, state)
             ctx.bus.emit("edge", src=node_name, dst=nxt, step=steps)
@@ -144,6 +161,10 @@ class Graph:
         if reason == "max_steps":
             state.write("graph", "status", "max_steps")
             ctx.bus.emit("error", error="达到最大步数上限", max_steps=self.max_steps)
+        elif reason == "max_iterations":
+            state.write("graph", "status", "max_iterations")
+            ctx.bus.emit("error", error="达到最大迭代轮次，问题仍未解决",
+                         max_iterations=self.max_iterations)
         elif reason == "end":
             state.write("graph", "status", "done" if state.verified else "stopped")
 

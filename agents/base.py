@@ -36,3 +36,15 @@ class BaseAgent:
 
     def apply(self, state, payload, ctx) -> NodeResult:
         raise NotImplementedError
+
+
+class LLMAgent(BaseAgent):
+    """真实 LLM 版：只把 invoke 换成模型调用，其余四步契约不变。"""
+
+    system_prompt = ""
+    temperature = 0.2
+
+    def invoke(self, ctx, prompt: str, state) -> str:
+        if ctx.llm is None:
+            raise RuntimeError(f"{self.name} 需要 LLM，但本次运行未配置（可用 --mock 离线运行）")
+        return ctx.llm.chat(self.system_prompt, prompt, temperature=self.temperature)
