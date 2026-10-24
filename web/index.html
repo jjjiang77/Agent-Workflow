@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Workflow — 多 Agent 代码审查闭环</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+      background: #ffffff;
+      color: #000000;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    :root {
+      --blue: #0000ff;
+      --tint: #f0f0ff;
+      --muted: #666666;
+      --red: #d40000;
+      --green: #006600;
+    }
+
+    .topbar {
+      height: 56px;
+      background: var(--blue);
+      color: #fff;
+      border-bottom: 4px solid #000;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 800; font-size: 17px; letter-spacing: .5px; }
+    .brand .dot { width: 13px; height: 13px; background: #fff; border: 2px solid #000; }
+    .topmeta { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+    .pill { background: #fff; color: #000; border: 2px solid #000; padding: 2px 10px; font-weight: 800; }
+    .pill.ok { background: #d8ffd8; }
+    .pill.bad { background: #ffd8d8; }
+    .pill.run { background: #fff3a0; }
+
+    .layout { display: flex; height: calc(100vh - 56px); }
+    .panel { display: flex; flex-direction: column; min-width: 0; }
+    .left { width: 46%; border-right: 4px solid #000; }
+    .right { width: 54%; overflow-y: auto; background: #fafafa; }
+
+    .panel-header {
+      padding: 8px 16px;
+      background: var(--tint);
+      border-bottom: 2px solid #000;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex: 0 0 auto;
+    }
+
+    .task-box { padding: 14px 16px; border-bottom: 2px solid #000; flex: 0 0 auto; }
+    textarea {
+      width: 100%; height: 84px; border: 2px solid #000; padding: 8px 10px;
+      font: inherit; resize: none; outline: none;
+    }
+    textarea:focus { background: #fffff0; }
+    .row { display: flex; gap: 12px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+    .row label { font-size: 11px; font-weight: 700; color: #333; display: flex; align-items: center; gap: 6px; }
+    select, input[type=number] {
+      border: 2px solid #000; padding: 3px 6px; font: inherit; background: #fff;
+    }
+    input[type=number] { width: 58px; }
+    button {
+      background: var(--blue); color: #fff; border: 2px solid #000;
+      box-shadow: 3px 3px 0 #000; padding: 6px 18px; font: inherit;
+      font-weight: 800; cursor: pointer; margin-left: auto;
+    }
+    button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #000; }
+    button:disabled { background: #999; box-shadow: none; cursor: not-allowed; }
+    .warn { margin-top: 10px; border: 2px solid var(--red); color: var(--red); padding: 6px 10px; font-size: 12px; font-weight: 700; }
+
+    .timeline { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+    .step {
+      border: 2px solid #000; background: #fff; padding: 8px 10px;
+      display: flex; align-items: flex-start; gap: 10px;
+    }
+    .step.running { background: #fffbe0; box-shadow: 3px 3px 0 var(--blue); }
+    .step.done { background: var(--tint); }
+    .step.fail { background: #ffecec; border-color: var(--red); }
+    .step .no { font-weight: 800; width: 24px; flex: 0 0 auto; }
+    .step .name { font-weight: 800; text-transform: uppercase; letter-spacing: .5px; }
+    .step .tools { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .step .arrow { margin-left: auto; font-size: 11px; color: var(--blue); font-weight: 700; padding-top: 2px; white-space: nowrap; }
+
+    .block { margin: 12px 14px; border: 2px solid #000; background: #fff; }
+    .block h3 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px;
+      background: var(--tint); border-bottom: 2px solid #000;
+      padding: 6px 10px; display: flex; justify-content: space-between;
+    }
+    .block h3 small { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+    .block .content { padding: 10px; }
+    pre.code {
+      margin: 0; padding: 10px; background: #fbfbfb; border: 0;
+      font: inherit; white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow: auto;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border: 1px solid #ccc; padding: 5px 7px; text-align: left; vertical-align: top; }
+    th { background: #f4f4f4; font-size: 11px; }
+    .sev-high { color: var(--red); font-weight: 800; }
+    .sev-medium { color: #b36b00; font-weight: 700; }
+    .sev-low { color: var(--muted); }
+    .statebar {
+      display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+      margin: 12px 14px; padding: 8px 12px; border: 2px solid #000; background: #fff;
+      font-size: 12px;
+    }
+    .statebar .k { color: var(--muted); }
+    .msg { font-size: 12px; padding: 4px 0; border-bottom: 1px dashed #ddd; }
+    .msg:last-child { border-bottom: 0; }
+    .msg b { color: var(--blue); }
+    .muted { color: var(--muted); }
+    ul.notes { padding-left: 18px; font-size: 12px; }
+    ul.notes li { margin-bottom: 4px; }
+    .empty { color: var(--muted); font-size: 12px; padding: 10px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><span class="dot"></span>WORKFLOW / AGENT PIPELINE</div>
+    <div class="topmeta">
+      <span>迭代 <b>{{ state ? state.iteration : 0 }}</b></span>
+      <span class="pill" :class="statusPill">{{ statusLabel }}</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel left">
+      <div class="panel-header"><span>任务输入</span><span>coder → reviewer → fixer → verifier</span></div>
+      <div class="task-box">
+        <textarea v-model="task" :disabled="status === 'running'" placeholder="描述要生成的代码任务"></textarea>
+        <div class="row">
+          <label>模型
+            <select v-model="model" :disabled="status === 'running'">
+              <option value="qwen-plus">qwen-plus</option>
+            </select>
+          </label>
+          <label>最多修复
+            <input type="number" min="1" max="5" v-model.number="maxIterations" :disabled="status === 'running'">
+          </label>
+          <label><input type="checkbox" v-model="mock" :disabled="status === 'running'"> 离线 mock</label>
+          <button @click="start" :disabled="status === 'running' || !task.trim()">
+            {{ status === 'running' ? '运行中…' : '运行' }}
+          </button>
+        </div>
+        <div class="warn" v-if="!hasKey && !mock">未检测到 DASHSCOPE_API_KEY，请配置 .env 或勾选「离线 mock」</div>
+      </div>
+
+      <div class="panel-header"><span>执行轨迹</span><span>{{ steps.length }} steps</span></div>
+      <div class="timeline" ref="timeline">
+        <div v-if="!steps.length" class="empty">点击「运行」开始。每个节点进入时会实时出现。</div>
+        <div v-for="s in steps" :key="s.key" class="step" :class="s.status">
+          <div class="no">{{ String(s.step).padStart(2, '0') }}</div>
+          <div>
+            <div class="name">{{ s.node }}</div>
+            <div class="tools" v-if="s.tools.length">工具：{{ s.tools.join(' / ') }}</div>
+          </div>
+          <div class="arrow" v-if="s.next">→ {{ s.next }}</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel right">
+      <div class="panel-header"><span>Workflow State</span><span>state.json</span></div>
+
+      <div class="statebar" v-if="state">
+        <span class="pill" :class="statePill">{{ state.status }}</span>
+        <span><span class="k">verdict</span> {{ state.verdict || '—' }}</span>
+        <span><span class="k">verified</span> {{ state.verified ? '通过' : '未通过' }}</span>
+        <span><span class="k">iteration</span> {{ state.iteration }}</span>
+      </div>
+
+      <div class="block" v-if="state">
+        <h3>当前代码 <small>{{ currentCode.split('\n').length }} 行</small></h3>
+        <pre class="code">{{ currentCode }}</pre>
+      </div>
+
+      <div class="block" v-if="state && state.issues.length">
+        <h3>审查问题 <small>{{ state.issues.length }} 项</small></h3>
+        <div class="content">
+          <table>
+            <thead><tr><th style="width:56px">行号</th><th style="width:76px">等级</th><th>问题</th></tr></thead>
+            <tbody>
+              <tr v-for="(issue, i) in state.issues" :key="i">
+                <td>{{ issue.line }}</td>
+                <td :class="'sev-' + issue.severity">{{ issue.severity }}</td>
+                <td>{{ issue.message }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="block" v-if="state && state.verify_report">
+        <h3>验证报告</h3>
+        <div class="content">{{ state.verify_report }}</div>
+      </div>
+
+      <div class="block" v-if="state && state.fix_notes.length">
+        <h3>修复记录</h3>
+        <div class="content"><ul class="notes"><li v-for="(n, i) in state.fix_notes" :key="i">{{ n }}</li></ul></div>
+      </div>
+
+      <div class="block" v-if="messages.length">
+        <h3>Agent 交接消息 <small>{{ messages.length }} 条</small></h3>
+        <div class="content">
+          <div v-for="(m, i) in messages" :key="i" class="msg">
+            <b>{{ m.sender }}</b> → {{ m.receiver }}
+            <span class="muted">[{{ m.type }}] {{ payloadText(m.payload) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="block" v-if="errorMsg">
+        <h3>错误</h3>
+        <div class="content" style="color: #d40000;">{{ errorMsg }}</div>
+      </div>
+
+      <div class="empty" v-if="!state && !errorMsg">暂无状态。运行后这里实时显示共享 state 的内容。</div>
+    </section>
+  </main>
+</div>
+
+<script>
+  const { createApp, ref, computed, onMounted, nextTick } = Vue;
+
+  createApp({
+    setup() {
+      const task = ref('写一个计算器函数，直接用 eval 执行用户输入的数学表达式字符串');
+      const model = ref('qwen-plus');
+      const maxIterations = ref(3);
+      const mock = ref(false);
+      const status = ref('idle');
+      const steps = ref([]);
+      const state = ref(null);
+      const messages = ref([]);
+      const errorMsg = ref('');
+      const hasKey = ref(true);
+      const timeline = ref(null);
+      let source = null;
+      const activeIndex = {};
+
+      const currentCode = computed(() => {
+        if (!state.value) return '';
+        return state.value.patched_code || state.value.code || '';
+      });
+
+      const statusLabel = computed(() => ({
+        idle: 'IDLE',
+        running: 'RUNNING',
+        done: 'DONE',
+        stopped: 'STOPPED',
+      }[status.value] || status.value.toUpperCase()));
+
+      const statusPill = computed(() => {
+        if (status.value === 'running') return 'run';
+        if (status.value === 'done') return 'ok';
+        if (status.value === 'idle') return '';
+        return 'bad';
+      });
+
+      const statePill = computed(() => {
+        if (!state.value) return '';
+        const s = state.value.status || '';
+        if (s === 'done') return 'ok';
+        if (s === 'running') return 'run';
+        return 'bad';
+      });
+
+      function payloadText(payload) {
+        if (!payload) return '';
+        return Object.entries(payload)
+          .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+          .join(' ');
+      }
+
+      function reset() {
+        steps.value = [];
+        state.value = null;
+        messages.value = [];
+        errorMsg.value = '';
+        Object.keys(activeIndex).forEach(k => delete activeIndex[k]);
+      }
+
+      function scrollDown() {
+        nextTick(() => {
+          if (timeline.value) timeline.value.scrollTop = timeline.value.scrollHeight;
+        });
+      }
+
+      function handle(record) {
+        switch (record.event) {
+          case 'run_start':
+            status.value = 'running';
+            break;
+          case 'node_start':
+            steps.value.push({
+              key: record.step,
+              step: record.step,
+              node: record.node,
+              status: 'running',
+              tools: [],
+              next: '',
+            });
+            activeIndex[record.node] = steps.value.length - 1;
+            scrollDown();
+            break;
+          case 'tool_call': {
+            const i = activeIndex[record.node];
+            if (i != null) steps.value[i].tools.push(record.tool);
+            break;
+          }
+          case 'node_end': {
+            const i = activeIndex[record.node];
+            if (i != null) steps.value[i].status = 'done';
+            if (record.state) state.value = record.state;
+            break;
+          }
+          case 'edge': {
+            const target = steps.value.find(s => s.step === record.step);
+            if (target) target.next = record.dst || 'END';
+            break;
+          }
+          case 'node_skipped': {
+            const i = activeIndex[record.node];
+            if (i != null) steps.value[i].status = 'fail';
+            break;
+          }
+          case 'message':
+            messages.value.push(record.message);
+            break;
+          case 'error':
+            errorMsg.value = record.error || '未知错误';
+            break;
+          case 'run_end':
+            status.value = record.status;
+            break;
+          case 'stream_end':
+            if (source) { source.close(); source = null; }
+            break;
+        }
+      }
+
+      async function start() {
+        if (!task.value.trim() || status.value === 'running') return;
+        reset();
+        status.value = 'running';
+
+        const resp = await fetch('/api/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            task: task.value,
+            model: model.value,
+            max_iterations: maxIterations.value,
+            mock: mock.value,
+          }),
+        });
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          status.value = 'idle';
+          errorMsg.value = data.error || '启动失败';
+          return;
+        }
+
+        if (source) source.close();
+        source = new EventSource('/api/stream');
+        source.onmessage = ev => {
+          try { handle(JSON.parse(ev.data)); } catch (e) { /* 忽略非 JSON 心跳 */ }
+        };
+      }
+
+      onMounted(async () => {
+        try {
+          const info = await (await fetch('/api/status')).json();
+          hasKey.value = !!info.has_key;
+        } catch (e) {
+          hasKey.value = true;
+        }
+      });
+
+      return {
+        task, model, maxIterations, mock, status,
+        steps, state, messages, errorMsg, hasKey, timeline,
+        currentCode, statusLabel, statusPill, statePill,
+        payloadText, start,
+      };
+    },
+  }).mount('#app');
+</script>
+</body>
+</html>
